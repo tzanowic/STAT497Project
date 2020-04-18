@@ -1,0 +1,270 @@
+---
+title: "STAT 497 Final Project"
+author: "Tristan Zanowic"
+date: "April 12th, 2020"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+#### Front Matter
+```{r, message=F, warning=F}
+library(ggplot2)
+library(dplyr)
+library(lmerTest)
+library(lme4)
+library(knitr)
+library(tidyverse)
+library(lmtest)
+library(Stat2Data)
+```
+
+<br>
+
+## Introduction
+
+The data I will be working with is Major League Baseball play by play data from the 2018 season, found on kaggle.com. This data features the result of every at bat during the regular season, detailing variables describing each play, such as who was batting and pitching, what their hand was, what was the count and result of the at bat, and basically every other aspect of that play imaginable. As seen in the table below, there are 97 variables describing each at bat during the 2018 season, making for 191,051 rows of data. In order to make the predictive element of this research more effective, we can take a sample of 15000 of this data.
+
+```{r}
+playbyplay <- read.csv("all2018plays.csv", header = TRUE)
+head(playbyplay)
+```
+```{r}
+playbyplayssamp <- read.csv("playbyplaysamp.csv", header = TRUE)
+nrow(playbyplayssamp)
+```
+
+Using this data, many trends and patterns in the game of baseball can be revealed. First, I am interested in the probability of getting walked. Walks are a very important part of the game of baseball and even can measure part of a batter's efficiency by showing his ability to take pitches and get on base. Many factors can play a role in getting walked, but the logistic regression in this research will answer the question, **Does the probability of getting walked depend upon the outs in the inning, lineup position of the batter, and if there is already a runner on first?**. It will interesting to see how the probability of getting walked changes throughout an inning, as well as in different scenarios that influence the pitcher, like having a runner on first.
+
+The next way we can reasearch this data is through a multilevel model. Using this, we can find out more information and patterns among the game at different levels, such as the batter level, the at bat level, and many more. The main question of focus for the multi-level model is **Do batters of opposite handedness of the pitcher perform better?** There are many people who suspect that this hypothesis is true as many managers will set up their lineup or put in certain pinch hitters knowing they are the opposite hand of the pitchers. Using a mixed model, we can determine if this is true, and to what extent. 
+
+<br>
+
+## EDA
+
+<br>
+
+#### Logistic EDA
+
+First, we can examine the data we want to use for our logistic regression by selection the variables necessary for that research. In order to determine the effect of runners on base, outs, spot in the lineup on the probability of getting walked, we can select these variables and mutate the data to serve the purpose of our research. We can add an indicator for getting walked (both normally and intentionally) and an indicator for runner on first to help our study.
+
+```{r}
+# Selecting and Mutating Variables Needed for Logistic Regression
+WalkData <-
+  playbyplayssamp %>% 
+  select(OUTS_CT, EVENT_CD, BASE1_RUN_ID, INN_CT, BAT_LINEUP_ID) %>%
+  mutate(WALK = ifelse(grepl("14|15", EVENT_CD), 1, 0)) %>%
+  mutate(RUNONBASE1 = ifelse(grepl("[[:digit:]]", BASE1_RUN_ID), 1, 0))
+```
+
+First, we can plot the log odds of getting walked agianst lineup position to see how the odds of getting walked change as different batters in the lineup come up to bat. From this plot, we can see there is a slightly negative relationship between the log odds of getting walked and lineup position. We might expect that as the position in the lineup increases, the probability of getting walked decreases. 
+
+```{r}
+emplogitplot1(WALK ~ BAT_LINEUP_ID, data = WalkData, ngroups = "all" )
+```
+
+Next, we can plot the log odds of getting walked against the number of outs at the start of the at bat. Although this plot only has three points because there can only be three variations of outs at the beginning of the at bat, it does reveal a positive relationship between getting walked and number of outs. We can see from the plot that players coming up to bat with two outs in the inning have a much higher probability of getting walked than if there was zero or one out.
+
+```{r}
+emplogitplot1(WALK ~ OUTS_CT, data = WalkData, ngroups = "all" )
+```
+
+The plot below shows the differences in number of walks based on if there is a runner on base. We can see that when the batter is walked, a majority of times there is not a runner on first. It also appears that in at bats that do not result in a walk, more times than not there is no runner on first. 
+
+```{r}
+CellData <-
+WalkData %>%
+  group_by(WALK, RUNONBASE1) %>%
+  summarise(count = n()) 
+CellData %>%
+  ggplot(aes(x=RUNONBASE1, y=count)) + 
+  geom_bar(stat = "identity") + 
+  facet_wrap(~WALK)
+```
+
+#### Multilevel EDA
+
+To begin our Multilevel modeling, it would smart to trim down the data from the 97 columns it has to only the variables necessary for this research. To help determine the effect of the batter and pitcher's handedness on the outcome of an at bat, we can use the variables that tell us who is at bat, what the handedness of the batter and the pitcher are, and what the value of the batter's hit was (if any).
+
+```{r}
+# Select Variables Needed for MultiLevel Model
+BaseData <-
+playbyplayssamp %>%
+  select(BAT_ID, BAT_HAND_CD, PIT_HAND_CD, H_FL)
+```
+
+First, we can explore level one factor explaining what type of pitcher the batter is facing, a righty or a lefty. Below we can see the results of Mike Trout when he faces each kind of pitcher. Unsurprisingly, he does not get a hit in the majority of at bats, but it does appear when he gets on, more times than not its against a right handed pitcher. Since Mike Trout is a right handed batter, we can also explore the effects on a left handed hitter; Kyle Seager. He also appears to have got more hits against right handed pitchers based on the plot below. Obviously, these players do not represent the entire league of hitters, but they do show some insight into these level one factors. 
+
+```{r}
+# Mike Trout
+IDTrout = BaseData[BaseData$BAT_ID=="troum001",]
+ggplot(data=IDTrout, aes(x=PIT_HAND_CD,y=H_FL)) + geom_dotplot(binaxis="y") + coord_flip()
+# Kyle Seager
+IDSeager = BaseData[BaseData$BAT_ID=="seagk001",]
+ggplot(data=IDSeager, aes(x=PIT_HAND_CD,y=H_FL)) + geom_dotplot(binaxis="y") + coord_flip()
+```
+
+Next, we can explore the effect of the level two factor of batter handedness. In order to lose potential outliers, such as a batter who only had one at bat and hit a home run, we can filter the data to be at least 10 at bats. Based on the boxplots below, there does not appear to be much of a difference between right handed batters and left handed batters in terms of hit value. Each side had relatively the same range of mean hit values and approximately the same average.
+
+```{r}
+# Finding Mean Hit Value per Player
+BaseData.Lev2 =  BaseData %>%  group_by(BAT_ID) %>% mutate(totalatbats = n()) %>% filter(totalatbats > 10)
+meanbysubj = BaseData %>% group_by(BAT_ID) %>% 
+  summarise(meanbysubj = mean(H_FL, na.rm = TRUE))
+BaseData.Lev2 = BaseData.Lev2 %>% left_join(meanbysubj, by = "BAT_ID")
+# Comparitive BoxPlots
+ggplot(data=BaseData.Lev2, aes(x=BAT_HAND_CD,y=meanbysubj)) + 
+  geom_boxplot() + coord_flip()
+``` 
+
+<br>
+
+## Logistic Regression
+
+To begin, we can look at the how the number of outs in an inning effects the odds of getting walked by fitting a logistic model with only outs. From this, we can begin to understand how each variable effects getting walked. In this case, the fixed effect for Outs does appear to be highly significant, which means it appears that the number of outs strongly effects the odds of getting walked. Using this model below, we can compute the odds ratio for outs:
+
+e^(.1366) = 1.146. Therefore, the odds of the batter getting walked increases by a factor of **1.146** for every additional out in the inning at the start of the at bat.
+
+We can also compute the probability of getting walked with no outs in the inning by plugging in the intercept to make the equation e^(-2.559) / 1+e^(-2.559), which is equal to **.0718**.
+
+```{r}
+model.outs = glm(WALK ~ OUTS_CT , family = binomial, data = WalkData)
+summary(model.outs)
+exp(-2.55946)/(1 + exp(-2.55946))
+```
+
+Next, we can look at the probability of getting walked using a model with both outs and batter's position in the lineup to see how the odds change throughout different situations in an inning. After fitting this model, we can compute and interpret the odds ratio for both outs and lineup position to see how each affects getting walked.
+
+For outs, e^(.141) = 1.514. Therefore, the odds of getting walked increases by **1.514** for every additional out in the inning at the start of the at bat, controlling for the batter's lineup position.
+
+For lineup position, e^(-.0268) = .9735. Thus, for every increase in one position within the lineup (going from 1st to 9th), the odds of getting walked decrease by a factor of **.9735**, controlling for number of outs in the inning. This may be a very small change, but nonetheless it is significant.
+
+If we wanted to compute the probability of the clean-up hitter getting walked with 2 outs in the inning, we can plug in Outs=2 and Lineup Position = 4 to the equation and then solve for probability. In this case, this would be equal to **.0943**.
+
+Finally, we can look at an LRT using the max likelihood of each model to determine if this model is a better fit that the origninal model with only outs. Based on the table below, we get an LRT statistic of 5.31 and corresponding p-value of.02124, which is less than .05. This means we can reject the reduced model in favor of our new position model. 
+
+```{r}
+model.position = glm(WALK ~ (OUTS_CT + BAT_LINEUP_ID), family = binomial, data = WalkData)
+summary(model.position)
+# Probability of getting walked with 2 outs and position 4
+exp(-2.43655 + 2*.141 - 4*.0268)/(1 + exp(-2.43655 + 2*.141 - 4*.0268))
+# LRT Test
+lrtest(model.position, model.outs)
+```
+
+Moving on, we can add our final predictor: an indicator for if there is a runner on first at the beginning of the at bat. Our new model now predicts the probability of getting walked from number of outs, lineup position of the batter, and if there is already a runner on first. The corresponding odds ratios are as follows:
+
+For outs, e^(.1655) = 1.18. For every additional out at the beginning of the at bat, the odds of getting walked increase by a factor of **1.18**, controlling for lineup position and if there is a runner on first. This is a very significant term, so its safe to say outs have a strong effect on getting walked.
+
+For lineup position, e^(-.0246) = .9757. For every increase in one position in the lineup, the odds of getting walked decreases by **.9757**, controlling for outs and a runner on first. This term is barely significant as it appears to have much less of an effect on getting walked as outs and runner on first do.
+
+For runner on first, e^(-.3452) = .7080. The odds of getting walked for at bats in which there is already a runner on first is **.7080** times lower than the odds for at bats with no runner on first, controlling for outs and lineup position. This also appears to be very significant.
+
+Finally for this model, we can compare it to the previous model (model.position) using an LRT test to determine if it is indeed a better fit. From this test, we get an LRT statistic of 26.626 and corresponding p-value way below .05. Therefore, we can reject the reduced model and conclude that the additive model with outs, lineup position, and a runner on first indicator is a better fit.
+
+```{r}
+model.add = glm(WALK ~ OUTS_CT + BAT_LINEUP_ID + RUNONBASE1, family = binomial, data = WalkData)
+summary(model.add)
+# LRT Test
+lrtest(model.add, model.position)
+```
+
+Lastly, we can fit an interaction model that includes the three terms previously used as well as their two-way interactions. After fitting this model, it appears the effects of outs, lineup position, and having a runner on first are about the same as the previous model, just way less significant. In terms of the newly added interactions, none of these are remotely close to being significant.
+
+Since much of this model appears to be insignificant, we can use the LRT test to determine if we should be keeping these interaction terms. From that test between the interaction model and the additive model, we get an LRT statistic of 2.8 and a corresponding p-value of .422. Therefore, we fail to reject the reduced model, and can conclude the interaction model is a worse fit. That being said, our final model to predict the probability of getting walked will be the additive model:
+
+\[ \log\left(p_i\over1-p_i\right)=\beta_0+\beta_1OUTS+\beta_2LINEUPPOS+\beta_3RUNNER1
+\]
+
+```{r}
+model.int = glm(WALK ~ OUTS_CT + BAT_LINEUP_ID + RUNONBASE1 + OUTS_CT*BAT_LINEUP_ID + BAT_LINEUP_ID*RUNONBASE1 + OUTS_CT*RUNONBASE1, family = binomial, data = WalkData)
+summary(model.int)
+# LRT Test
+lrtest(model.int, model.add)
+```
+
+If we plot the residuals vs fitted values as well as vs the esimated log odds, two very similar plots appear. Looking at these plots, we get a horizontal line of residuals at 0 and then a weak, negative linear band of points above that. There does not appear to be any strong curvature within these plots. Based on this as well as the structure of the data, it is likely safe to say that we do not need to be too concerned about any unmet conditions at this point.
+
+```{r}
+e = residuals(model.add, type='pearson')
+phat = model.add$fitted.values
+l.odds = model.add$linear.predictors
+plot(phat, e)
+plot(l.odds, e)
+```
+
+<br>
+
+## Logistic Conclusion
+
+After fitting several models to find out how the probability of getting walked depends on outs, lineup position, and having a runner on first, we can notice a lot of trends. To begin, there is strong evidence to show that as the number of outs increases, the probability of getting walked increases. This should generally make sense, as a pitcher would probably be more likely to "work around" a batter with 2 outs because they would not want an inning to start out with a runner on. Next, we can see that the probability of getting walked decreased down the lineup. This means that players hitting in the beginning of the order have a higher probability of getting walked than the bottom of the order. One possible explanation for this is the fact that MLB teams often place their best hitters into the beginning of the order. Pitchers probably would rather throw more challenging pitches to these players, resulting in more walks. Finally, we can see that with a runner on first to begin the at bat, the probability of getting walked significantly decreases. This could be a result of many things, but I think many people agree that a pitcher definitely does not want to give the batter a free pass and move that runner into scoring position. 
+
+In conclusion, we were able to reveal a lot about the factors that play into batters getting walked using logistic regression. While a lot of these effects were relatively small, they were still significant, meaning that over the course of the season, it is likely the trends described above will still hold true.
+
+## Multilevel Regression
+
+To begin, we can fit the unconditional means model (fit.a) before adding any of our level one or level two predictors. Without having any predictors, much of this model is not very valuable. The estimated fixed effects and variance components are as follows:
+
+$\alpha_{0}$ = .3574. Therefore, the mean estimated hit value is **.3574**.   
+$\sigma^2_u$ = .0035 and $\sigma^2$ = .7046. We can use these to calculate the intraclass correlation coefficient, which is (.0035)/(.0035+.7046) = .0049, meaning only **0.49%** of total variability in hit values is attributable to differences among batters.
+
+```{r}
+fit.a = lmer(H_FL ~ 1 + (1|BAT_ID), data = BaseData)
+summary(fit.a)
+```
+
+Moving on, we can add in our level one predictor of pitcher handedness to the model (fit.b). In this model, the indicator for pitcher's hand represents right handed pitchers. After fitting this model, we can gather the estimated fixed effects and variance components to be:
+
+$\hat{\alpha}_{0}$ = .3407. Thus, the estimated mean hit value when facing a left handed pitcher is **.3407**.
+
+$\hat{\beta}_{1}$ = .0230. This means that the estimated mean hit value when facing a right handed pitcher is **.0230** higher than mean hit value against lefties. 
+
+$\hat{\sigma}_{u}$ = .00422. This is the variance in between-batter deviations in hit value for at bats against right handed and left handed pitchers.
+
+$\hat{\sigma}_{v}$ = .00328. The estimated standard deviation of differences in hit values between at bats against right handed and left handed pitchers is .00328.
+
+As seen from the estimated effects, there does not appear to be any difference in the mean hit values for players facing right handed and left handed pitchers.
+
+```{r}
+fit.b = lmer(H_FL ~ PIT_HAND_CD + (0+ PIT_HAND_CD|BAT_ID), data = BaseData)
+summary(fit.b)
+```
+
+In order to fully understand how different batters match up against different pitchers, we should add the level two factor of batter handedness to the model. This gives us a multilevel model layout as such:
+
+**LEVEL ONE**: \[Y_{ij} = a_i + b_i(PitcherRight_{ij}) + e_{ij}\]
+
+**LEVEL TWO**: 
+
+$a_i=\alpha_0 + \alpha_1(BatterRight_i) + u_i$   
+$b_i=\beta_0 + \beta_1(BatterRight_i) + v_i$   
+
+**COMPOSITE MODEL**:
+
+\[Y_{ij} = \alpha_0 + \alpha_1(BatterRight_i) + \beta_0(PitcherRight_{ij}) + \beta_1(BatterRight_{i}:PitcherRight_{ij}) + u_i + v_i(PitcherRight_{ij}) + e_{ij}\]
+
+Using this multilevel model (fit.c) with level one factor of pitcher's hand and level two factor of batter's hand, we can estimate the fixed effects and variance components of our predictors of interest.
+
+$\hat{\alpha}_{0}$ = .2988. This is the estimated mean hit value for left handed at bats against left handed pitchers (baseline). 
+
+$\hat{\alpha}_{1}$ = 0.05776. There is an increase in estimated mean hit value by **.05776** for right handed batters against left handed pitchers.
+
+$\hat{\beta}_{0}$ = 0.06424. There is an increase in estimated mean hit value by **0.06424** for left handed at bats against a right handed pitcher. 
+
+$\hat{\beta}_{1}$ = -0.05673. There is an estimated decrease in mean hit value by **0.05673** for right handed at bats against right handed pitchers.
+
+$\hat{\sigma}_{u}$ = .00403.  The variance in between-batter deviations in hit value for at bats against right handed and left handed pitchers is .00403, after controlling for batter's handedness.
+
+$\hat{\sigma}_{v}$ = .00341. The estimated standard deviation of differences in hit values between at bats against right handed and left handed pitchers is .00341, after controlling for batter's handedness.
+
+
+```{r}
+fit.c = lmer(H_FL ~ BAT_HAND_CD + PIT_HAND_CD + BAT_HAND_CD*PIT_HAND_CD + (0 + PIT_HAND_CD|BAT_ID), data = BaseData)
+summary(fit.c)
+```
+
+
+### Multilevel Conclusions
+
+Based on our final multilevel model using both batter and pitcher handedness to determine hit values, there does appear to be trends. While all the terms might not be exactly significant by the .05 standard, they are very close. It can be seen that when the batter and pitcher have opposite handedness, the mean estimated hit value increases. This means that when the batter is a lefty and the pitcher is a righty, or vice vera, it tends to result in a better outcome for the batter. While this effect may be fairly small, it is still a change in estimated hit value. Therefore, to answer the question that prompted this multilevel model, we can say "Yes", batters with handedness opposite to the pitcher have a higher mean hit value than those with similar handedness. Based on the models, we might even be able to say that left handed batters will do slightly better than right handed batters when facing opposite hands.
